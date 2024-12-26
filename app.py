@@ -75,7 +75,7 @@ elif options == "Healthcare AI Chatbot":
     st.write("You can ask me about the clinic, schedule appointments, request medication refills, or check your billing information.")
     st.write("I am always here to help you!")
 
-    dataframed = pd.read_csv("data/healthcare_data.csv")
+    dataframed = pd.read_csv("https://raw.githubusercontent.com/11andrea2233/Healthcare-AI-Chatbot/refs/heads/main/healthcare_dataset.csv")
     dataframed['combined'] = dataframed.apply(lambda row : ' '.join(row.values.astype(str)), axis = 1)
     documents = dataframed['combined'].tolist()
     embeddings = [get_embedding(doc, engine = "text-embedding-3-small") for doc in documents]
