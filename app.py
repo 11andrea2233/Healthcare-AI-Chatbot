@@ -15,7 +15,6 @@ warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Your 24/7 Healthcare Receptionist", page_icon="👨‍⚕️👩‍⚕️", layout="wide")
 
-st.set_page_config(page_title="Your 24/7 Healthcare Receptionist", page_icon="👨‍⚕️👩‍⚕️", layout="wide")
 
 # Sidebar with OpenAI Key Input
 with st.sidebar:
