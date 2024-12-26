@@ -3,42 +3,39 @@ from streamlit_option_menu import option_menu
 import openai
 import numpy as np
 import pandas as pd
-from langchain.chat_models import ChatOpenAI
-from langchain.document_loaders import CSVLoader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.prompts import ChatPromptTemplate
-from langchain.vectorstores import Chroma
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.runnables import RunnableLambda, RunnablePassthrough
 from openai.embeddings_utils import get_embedding
 import faiss
+import time
+import pickle
+from tenacity import retry, stop_after_attempt, wait_fixed
+from openai.error import RateLimitError
 import warnings
-import os
 
 warnings.filterwarnings("ignore")
 
 st.set_page_config(page_title="Your 24/7 Healthcare Receptionist", page_icon="👨‍⚕️👩‍⚕️", layout="wide")
 
+st.set_page_config(page_title="Your 24/7 Healthcare Receptionist", page_icon="👨‍⚕️👩‍⚕️", layout="wide")
+
+# Sidebar with OpenAI Key Input
 with st.sidebar:
     openai.api_key = st.text_input("Enter your OpenAI API Key:", type="password")
-    if not (openai.api_key.startswith('sk-') and len(openai.api_key) == 164):
-        st.warning("Please enter your OpenAI Key to proceed.", icon="🔔")
+    if not (openai.api_key and openai.api_key.startswith('sk-') and len(openai.api_key) == 64):
+        st.warning("Please enter a valid OpenAI Key to proceed.", icon="🔔")
     else:
-        st.success("How can I help you today?", icon="🩺")
-        
+        st.success("Key Accepted! How can I help you today?", icon="🩺")
+    
     options = option_menu(
         "Dashboard",
         ["Home", "About Me", "Healthcare AI Chatbot"],
-        icons=['house', "🩺",  'file-text'],
+        icons=['house', "🩺", 'file-text'],
         menu_icon="list",
         default_index=0
     )
 
+# Persistent Session State
 if 'messages' not in st.session_state:
     st.session_state.messages = []
-    
-if 'chat_session' not in st.session_state:
-    st.session_state.chat_session = None
 
 # Options: Home
 if options == "Home":
@@ -75,21 +72,50 @@ elif options == "Healthcare AI Chatbot":
     st.write("You can ask me about the clinic, schedule appointments, request medication refills, or check your billing information.")
     st.write("I am always here to help you!")
 
-    dataframed = pd.read_csv("https://raw.githubusercontent.com/11andrea2233/Healthcare-AI-Chatbot/refs/heads/main/healthcare_dataset.csv")
-    dataframed['combined'] = dataframed.apply(lambda row : ' '.join(row.values.astype(str)), axis = 1)
+    st.write("Loading dataset...")
+    data_url = "https://raw.githubusercontent.com/11andrea2233/Healthcare-AI-Chatbot/refs/heads/main/healthcare_dataset.csv"
+    dataframed = pd.read_csv(data_url)
+    dataframed['combined'] = dataframed.apply(lambda row: ' '.join(row.values.astype(str)), axis=1)
     documents = dataframed['combined'].tolist()
 
-    # Get embeddings
+    # Embedding and FAISS Setup
+    st.write("Preparing embeddings...")
+
+    @retry(stop=stop_after_attempt(5), wait=wait_fixed(2))
+    def get_embedding_with_retry(doc):
+        return get_embedding(doc, engine="text-embedding-ada-002")
+
     def get_embeddings_safe(documents):
         embeddings = []
         for doc in documents:
             try:
-                embedding = get_embedding(doc, engine="text-embedding-ada-002")
+                embedding = get_embedding_with_retry(doc)
                 embeddings.append(embedding)
+                time.sleep(1)  # Throttle requests
             except Exception as e:
                 st.error(f"Error generating embedding for document: {doc}\n{e}")
         return embeddings
-    embeddings = get_embeddings_safe(documents)
+
+    def save_embeddings(embeddings, filename="embeddings.pkl"):
+        with open(filename, "wb") as f:
+            pickle.dump(embeddings, f)
+
+    def load_embeddings(filename="embeddings.pkl"):
+        with open(filename, "rb") as f:
+            return pickle.load(f)
+
+    # Truncate documents for token limit
+    MAX_TOKENS = 8192
+    documents = [doc[:MAX_TOKENS] for doc in documents]
+
+    # Load or compute embeddings
+    try:
+        embeddings = load_embeddings()
+    except FileNotFoundError:
+        embeddings = get_embeddings_safe(documents)
+        save_embeddings(embeddings)
+
+    # Convert embeddings to numpy array and build FAISS index
     embedding_dim = len(embeddings[0])
     embeddings_np = np.array(embeddings).astype('float32')
     index = faiss.IndexFlatL2(embedding_dim)
@@ -115,14 +141,14 @@ elif options == "Healthcare AI Chatbot":
     def initialize_conversation(prompt):
         if 'message' not in st.session_state:
             st.session_state.message = []
-            st.session_state.message.append({"role": "system", "content": System_prompt})
-            chat =  openai.ChatCompletion.create(model = "gpt-4o-mini", messages = st.session_state.message, temperature=0.5, max_tokens=1500, top_p=1, frequency_penalty=0, presence_penalty=0)
+            st.session_state.message.append({"role": "system", "content": prompt})
+            chat =  openai.ChatCompletion.create(model = "gpt-4o-mini", messages = st.session_state.message, temperature=0.5, max_tokens=1500)
             response = chat.choices[0].message.content
             st.session_state.message.append({"role": "assistant", "content": response})
 
     initialize_conversation(System_prompt)
 
-    for messages in st.session_state.message:
+    for messages in st.session_state.messages:
         if messages['role'] == 'system':
             continue
         else:
@@ -132,20 +158,23 @@ elif options == "Healthcare AI Chatbot":
     if user_message := st.chat_input("Hi! How can I help you today?"):
         with st.chat_message("user"):
             st.markdown(user_message)
-        query_embedding = get_embedding(user_message, engine='text-embedding-3-small')
-        query_embedding_np = np.array([query_embedding]).astype('float32')    
+
+        query_embedding = get_embedding_with_retry(user_message)
+        query_embedding_np = np.array([query_embedding]).astype('float32')
         _, indices = index.search(query_embedding_np, 2)
         retrieved_docs = [documents[i] for i in indices[0]]
         context = ' '.join(retrieved_docs)
+
         structured_prompt = f"Context:\n{context}\n\nQuery:\n{user_message}\n\nResponse:"
-        chat =  openai.ChatCompletion.create(model = "gpt-4o-mini", messages = st.session_state.message + [{"role": "user", "content": structured_prompt}], temperature=0.5, max_tokens=1500, top_p=1, frequency_penalty=0, presence_penalty=0)
-        st.session_state.message.append({"role": "user", "content": user_message})
         chat = openai.ChatCompletion.create(
-            model="gpt-4o-mini",
-            messages=st.session_state.message,
-            )
+            model="gpt-4",
+            messages=st.session_state.messages + [{"role": "user", "content": structured_prompt}],
+            temperature=0.5,
+            max_tokens=1500
+        )
         response = chat.choices[0].message.content
+
         with st.chat_message("assistant"):
             st.markdown(response)
-        st.session_state.message.append({"role": "assistant", "content": response})
+        st.session_state.messages.append({"role": "assistant", "content": response})
 
