@@ -78,7 +78,18 @@ elif options == "Healthcare AI Chatbot":
     dataframed = pd.read_csv("https://raw.githubusercontent.com/11andrea2233/Healthcare-AI-Chatbot/refs/heads/main/healthcare_dataset.csv")
     dataframed['combined'] = dataframed.apply(lambda row : ' '.join(row.values.astype(str)), axis = 1)
     documents = dataframed['combined'].tolist()
-    embeddings = [get_embedding(doc, engine = "text-embedding-3-small") for doc in documents]
+
+    # Get embeddings
+    def get_embeddings_safe(documents):
+        embeddings = []
+        for doc in documents:
+            try:
+                embedding = get_embedding(doc, engine="text-embedding-ada-002")
+                embeddings.append(embedding)
+            except Exception as e:
+                st.error(f"Error generating embedding for document: {doc}\n{e}")
+        return embeddings
+    embeddings = get_embeddings_safe(documents)
     embedding_dim = len(embeddings[0])
     embeddings_np = np.array(embeddings).astype('float32')
     index = faiss.IndexFlatL2(embedding_dim)
@@ -104,7 +115,7 @@ elif options == "Healthcare AI Chatbot":
     def initialize_conversation(prompt):
         if 'message' not in st.session_state:
             st.session_state.message = []
-            st.session_state.message.append({"role": "system", "content": System_Prompt})
+            st.session_state.message.append({"role": "system", "content": System_prompt})
             chat =  openai.ChatCompletion.create(model = "gpt-4o-mini", messages = st.session_state.message, temperature=0.5, max_tokens=1500, top_p=1, frequency_penalty=0, presence_penalty=0)
             response = chat.choices[0].message.content
             st.session_state.message.append({"role": "assistant", "content": response})
