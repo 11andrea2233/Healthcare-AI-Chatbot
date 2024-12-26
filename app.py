@@ -83,3 +83,58 @@ elif options == "Healthcare AI Chatbot":
     embeddings_np = np.array(embeddings).astype('float32')
     index = faiss.IndexFlatL2(embedding_dim)
     index.add(embeddings_np)
+
+    System_prompt = """
+        Role: You are a Healthcare AI Chatbot designed to assist patients and medical professionals by retrieving, explaining, and managing healthcare-related data securely and accurately.
+        Intent: Provide personalized responses based on user queries related to patient records, medical conditions, admission details, medications, and billing. Ensure user privacy and comply with healthcare regulations.
+        Context: You are working with a dataset containing patient information, including demographic details (e.g., name, age, gender), medical history, admission records, assigned doctors, hospital details, medications, and billing. You are required to use this dataset to answer questions, provide summaries, and guide users through healthcare processes.
+        Constraints: 
+            - Ensure data privacy by verifying user identity before sharing sensitive information.
+            - Respond only with relevant information derived from the dataset.
+            - Do not disclose unnecessary details about other patients.
+            - Follow a professional and empathetic tone when discussing medical information.
+            - Avoid generating responses that could be misinterpreted as medical advice; always suggest consulting a licensed healthcare professional for decisions.
+        Example:
+            User: Can you provide details about my last admission? My name is Bobby Jackson, and my date of birth is 1994-03-15.
+            Healthcare AI Chatbot: Hello, Bobby! Based on your records, you were last admitted on 2024-01-31 for Cancer. You were treated by Dr. Matthew Smith at Sons and Miller Hospital. Your prescribed medication during this visit was Paracetamol.
+            User: What was my billing amount?
+            Healthcare AI Chatbot: Your total billing amount for this visit was $18,856.28. Your insurance provider, Blue Cross, covered part of this amount. Please let me know if you would like to see a detailed breakdown or have other questions!
+        """
+
+    def initialize_conversation(prompt):
+        if 'message' not in st.session_state:
+            st.session_state.message = []
+            st.session_state.message.append({"role": "system", "content": System_Prompt})
+            chat =  openai.ChatCompletion.create(model = "gpt-4o-mini", messages = st.session_state.message, temperature=0.5, max_tokens=1500, top_p=1, frequency_penalty=0, presence_penalty=0)
+            response = chat.choices[0].message.content
+            st.session_state.message.append({"role": "assistant", "content": response})
+
+    initialize_conversation(System_prompt)
+
+    for messages in st.session_state.message:
+        if messages['role'] == 'system':
+            continue
+        else:
+            with st.chat_message(messages["role"]):
+                st.markdown(messages["content"])
+
+    if user_message := st.chat_input("Hi! How can I help you today?"):
+        with st.chat_message("user"):
+            st.markdown(user_message)
+        query_embedding = get_embedding(user_message, engine='text-embedding-3-small')
+        query_embedding_np = np.array([query_embedding]).astype('float32')    
+        _, indices = index.search(query_embedding_np, 2)
+        retrieved_docs = [documents[i] for i in indices[0]]
+        context = ' '.join(retrieved_docs)
+        structured_prompt = f"Context:\n{context}\n\nQuery:\n{user_message}\n\nResponse:"
+        chat =  openai.ChatCompletion.create(model = "gpt-4o-mini", messages = st.session_state.message + [{"role": "user", "content": structured_prompt}], temperature=0.5, max_tokens=1500, top_p=1, frequency_penalty=0, presence_penalty=0)
+        st.session_state.message.append({"role": "user", "content": user_message})
+        chat = openai.ChatCompletion.create(
+            model="gpt-4o-mini",
+            messages=st.session_state.message,
+            )
+        response = chat.choices[0].message.content
+        with st.chat_message("assistant"):
+            st.markdown(response)
+        st.session_state.message.append({"role": "assistant", "content": response})
+
